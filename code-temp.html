@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Temperature based fan speed control code</title>
+    <link rel="stylesheet" href="code-waste-seg.css">
+</head>
+<body>
+    <h1>Temperature based fan speed control</h1>
+    <pre>
+        <code>
+            #include &lt;DHT.h&gt;
+
+                #define DHTPIN 2        // DHT11 data pin connected to Arduino pin 2
+                #define DHTTYPE DHT11   // DHT11 sensor
+                #define FAN 9           // Fan connected to PWM pin 9
+                
+                DHT dht(DHTPIN, DHTTYPE);
+                
+                void setup() {
+                  Serial.begin(9600);
+                  dht.begin();
+                  pinMode(FAN, OUTPUT);
+                }
+                
+                void loop() {
+                  float temperature = dht.readTemperature();
+                
+                  if (isnan(temperature)) {
+                    Serial.println("Failed to read from DHT sensor!");
+                    return;
+                  }
+                
+                  Serial.print("Temperature: ");
+                  Serial.print(temperature);
+                  Serial.println(" °C");
+                
+                  int fanSpeed = 0;
+                
+                  // Temperature to fan speed logic
+                  if (temperature < 25) {
+                    fanSpeed = 0;              // Fan OFF
+                  } else if (temperature >= 25 && temperature < 30) {
+                    fanSpeed = 85;             // Low speed (PWM ~33%)
+                  } else if (temperature >= 30 && temperature < 35) {
+                    fanSpeed = 170;            // Medium speed (PWM ~66%)
+                  } else {
+                    fanSpeed = 255;            // High speed (PWM 100%)
+                  }
+                
+                  analogWrite(FAN, fanSpeed);
+                
+                  delay(2000); // Read every 2 seconds
+                }
+                
+        </code>
+    </pre>
+</body>
+</html>

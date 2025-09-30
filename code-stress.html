@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stress Diagnosis Code</title>
+    <link rel="stylesheet" href="code-stress.css">
+</head>
+
+<body>
+    <h1>1.Arduino Iot Health Kit</h1>
+    <pre>
+        <code>
+    #include &lt;OneWire.h&gt; 
+    #include &lt;DallasTemperature.h&gt;
+    #include &lt;DHT.h&gt;
+    
+    // Pins for sensors
+    #define PULSE_SENSOR_PIN A0  // Pulse sensor
+    #define TEMP_SENSOR_PIN 5    // DS18B20 temperature sensor
+    #define DHT_PIN 7            // DHT22 sensor
+    #define DHT_TYPE DHT22
+    #define GSR_SENSOR_PIN A1    // GSR sensor
+    #define NUM_SAMPLES 10
+    
+    // Initialize DHT sensor
+    DHT dht(DHT_PIN, DHT_TYPE);
+    
+    // DS18B20 Temperature Sensor
+    OneWire oneWire(TEMP_SENSOR_PIN);
+    DallasTemperature sensors(&oneWire);
+    
+    // GSR sensor variables
+    int gsrValues[NUM_SAMPLES];  
+    int gsrIndex = 0;
+    float gsrSum = 0;
+    int baselineGSR = 0;
+    bool isWorn = false;
+    bool calibrated = false;
+    unsigned long lastReadingTime = 0;
+    unsigned long lastCalibrationTime = 0;  // Auto recalibrate
+    
+    void setup() {
+      Serial.begin(9600); // Communication with NodeMCU
+      mySerial.begin(9600);
+      dht.begin();
+      sensors.begin();
+    
+      // **Initial GSR Calibration**
+      Serial.println("Calibrating GSR sensor... Don't touch for 3 sec!");
+      delay(3000);
+      
+      long sumBaseline = 0;
+      for (int i = 0; i < 50; i++) {  // Take 50 readings
+        sumBaseline += analogRead(GSR_SENSOR_PIN);
+        delay(20);
+      }
+      
+      baselineGSR = sumBaseline / 50;  // Set baseline
+      Serial.print("Baseline GSR: ");
+      Serial.println(baselineGSR);
+      
+      calibrated = true;
+      lastReadingTime = millis();
+      lastCalibrationTime = millis();  // Start timer for recalibration
+    }
+    
+    // **Stable GSR Measurement Function**
+    float getStableGSR() {
+        int rawValue = analogRead(GSR_SENSOR_PIN);
+    
+        // If not calibrated, return 0
+        if (!calibrated) return 0;
+    
+        // **Auto Baseline Recalibration Every 2 Minutes**
+        if (millis() - lastCalibrationTime > 120000) {  
+            baselineGSR = (baselineGSR + rawValue) / 2;  
+            lastCalibrationTime = millis();
+            Serial.println("⚠ Auto Recalibrated GSR Baseline");
+        }
+    
+        // **Check if sensor is worn**
+        if (rawValue > baselineGSR + 15) {  
+            isWorn = true;  
+        } else if (rawValue < baselineGSR - 5) {  
+            isWorn = false;  
+        }
+    
+        // If not worn, reset values and return 0
+        if (!isWorn) {
+            gsrSum = 0;
+            gsrIndex = 0;
+            return 0;
+        }
+    
+        // **Moving Average Filter for Stability**
+        gsrSum -= gsrValues[gsrIndex];  
+        gsrValues[gsrIndex] = rawValue;  
+        gsrSum += gsrValues[gsrIndex];  
+        gsrIndex = (gsrIndex + 1) % NUM_SAMPLES;  
+    
+        float gsrFiltered = (gsrSum / NUM_SAMPLES) / 1023.0 * 19.0 + 1.0;
+    
+        return gsrFiltered;
+    }
+    
+    void loop() {
+      // **Take Readings Every 10 Seconds**
+      if (millis() - lastReadingTime >= 10000) {
+        lastReadingTime = millis();
+    
+        // **Read Pulse Sensor**
+        int pulseValue = analogRead(PULSE_SENSOR_PIN);
+        int BPM = map(pulseValue, 0, 1023, 50, 120);
+        if (pulseValue < 10) BPM = 0;  
+    
+        // **Read Temperature from DS18B20**
+        sensors.requestTemperatures();
+        float temperature = sensors.getTempCByIndex(0);
+        if (temperature < -100) temperature = 0;  
+    
+        // **Read Humidity from DHT22**
+        float humidity = dht.readHumidity();
+        if (isnan(humidity)) humidity = 0;  
+    
+        // **Read GSR Value**
+        float gsrStable = getStableGSR();
+    
+        // **Send Data to NodeMCU**
+        Serial.print(BPM);
+        Serial.print(",");
+        Serial.print(temperature);
+        Serial.print(",");
+        Serial.print(humidity);
+        Serial.print(",");
+        Serial.println(gsrStable);
+      }
+    
+      delay(1000);  
+    }
+        </code>
+    </pre>
+    <h1>2.Wifi Code</h1>
+    <pre>
+        <code>
+#define BLYNK_TEMPLATE_ID "TMPL36D7U0Xf0"
+#define BLYNK_TEMPLATE_NAME "Stress Diagnosis"
+#define BLYNK_AUTH_TOKEN "g_ilsJ6sboaXw8YI2s_ADf1yYFanBJ4P"
+
+#include &lt;ESP8266WiFi.h&gt;
+#include &lt;ESP8266HTTPClient.h>&gt;
+#include &lt;WiFiClient.h>&gt;
+#include &lt;BlynkSimpleEsp8266.h>&gt;
+#include &lt;SoftwareSerial.h>&gt;
+
+char auth[] = "g_ilsJ6sboaXw8YI2s_ADf1yYFanBJ4P";
+char ssid[] = "stress";
+char pass[] = "stress123";
+
+String serverURL = "http://192.168.39.130:5000/predict";
+
+// Sensor variables
+int BPM = 0;
+float temperature = 0.0;
+float humidity = 0.0;
+float gsrValue = 0.0;
+
+bool allReadingsTaken = false;
+int readingStage = 0; // 0: BPM, 1: Temp/Humidity, 2: GSR
+
+SoftwareSerial espSerial(D7, D8); // RX (D7), TX (D8)
+
+void setup() {
+  Serial.begin(9600);
+  espSerial.begin(9600);
+  WiFi.begin(ssid, pass);
+  Blynk.begin(auth, ssid, pass);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi Connected!");
+  Blynk.virtualWrite(V3, "You can start testing");
+  delay(1000);
+  Blynk.virtualWrite(V3, "Check BPM");
+}
+
+void loop() {
+  Blynk.run();
+  getSensorData();
+
+  if (allReadingsTaken) {
+    int stressLevel = getStressPrediction();
+    displayStressLevel(stressLevel);
+    resetReadings();
+  }
+}
+
+void getSensorData() {
+  if (espSerial.available()) {
+    String receivedData = espSerial.readStringUntil('\n');
+    Serial.println("Received: " + receivedData);
+
+    // Read values
+    sscanf(receivedData.c_str(), "%d,%f,%f,%f", &BPM, &temperature, &humidity, &gsrValue);
+
+    // Step-by-step guidance
+    if (readingStage == 0 && BPM > 0) {
+      
+      Blynk.virtualWrite(V0, BPM); // Show Heart Rate
+      Blynk.virtualWrite(V3, "Check Temperature&Humidity ");
+      readingStage++;
+    } else if (readingStage == 1 && temperature > 0) {
+      Blynk.virtualWrite(V1, temperature); // Show Temp
+      Blynk.virtualWrite(V2, humidity);    // Show Humidity
+      Blynk.virtualWrite(V3, "Check GSR");
+      readingStage++;
+    } else if (readingStage == 2 && gsrValue > 0) {
+      Blynk.virtualWrite(V11, gsrValue);   // Show GSR
+      Blynk.virtualWrite(V3, "Processing...");
+      readingStage++;
+      allReadingsTaken = true;
+    }
+  }
+}
+
+int getStressPrediction() {
+  WiFiClient client;
+  HTTPClient http;
+  http.begin(client, serverURL);
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+  String postData = "bpm=" + String(BPM) + "&temp=" + String(temperature) + "&humidity=" + String(humidity) + "&gsr=" + String(gsrValue);
+  int httpResponseCode = http.POST(postData);
+  String response = http.getString();
+  http.end();
+
+  // Indicate result
+  if (response.indexOf("High") != -1) {
+    Blynk.virtualWrite(V8, 255); Blynk.virtualWrite(V9, 0); Blynk.virtualWrite(V10, 0);
+    return 2;
+  } else if (response.indexOf("Moderate") != -1) {
+    Blynk.virtualWrite(V8, 0); Blynk.virtualWrite(V9, 255); Blynk.virtualWrite(V10, 0);
+    return 1;
+  } else {
+    Blynk.virtualWrite(V8, 0); Blynk.virtualWrite(V9, 0); Blynk.virtualWrite(V10, 255);
+    return 0;
+  }
+}
+
+void displayStressLevel(int level) {
+  String stressMessage = "";
+
+  if (level == 0)
+    stressMessage = "Low Stress";
+  else if (level == 1)
+    stressMessage = "Moderate Stress";
+  else
+    stressMessage = "High Stress";
+
+  Serial.println("Stress Level: " + stressMessage);
+  Blynk.virtualWrite(V3, stressMessage);
+
+
+  if (level == 0) {
+    Blynk.logEvent("stress_alert", "🧘 Captain Cool! You're in a calm state.");
+  } else if (level == 1) {
+    Blynk.logEvent("stress_alert", "⚠️ Stress Level: MODERATE! Take a deep breath.");
+  } else if (level == 2) {
+    Blynk.logEvent("stress_alert", "🚨 Stress Level: HIGH! Relax immediately!");
+  }
+  
+}
+void resetReadings() {
+  BPM = 0;
+  temperature = 0.0;
+  humidity = 0.0;
+  gsrValue = 0.0;
+  readingStage = 0;
+  allReadingsTaken = false;
+
+  Blynk.virtualWrite(V0, 0);
+  Blynk.virtualWrite(V1, 0);
+  Blynk.virtualWrite(V2, 0);
+  Blynk.virtualWrite(V11, 0);
+  Blynk.virtualWrite(V8, 0);  // Red OFF (High)
+  Blynk.virtualWrite(V9, 0);  // Yellow OFF (Moderate)
+  Blynk.virtualWrite(V10, 0); // Green OFF (Low)
+
+  delay(5000);
+  Blynk.virtualWrite(V3, "You can start testing");
+}
+
+        </code>
+    </pre>
+</body>
+
+</html>
